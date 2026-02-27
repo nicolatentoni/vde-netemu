@@ -1,4 +1,4 @@
-BIN=$(DESTDIR)/usr/bin
+BIN=$(DESTDIR)/usr/local/bin
 
 all: vde-netemu
 
