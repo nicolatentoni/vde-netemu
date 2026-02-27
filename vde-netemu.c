@@ -177,6 +177,13 @@ gettimeofdayms(void) {
   return (unsigned long long) tv.tv_sec * 1000ULL + (unsigned long long) tv.tv_usec / 1000;
 }
 
+static inline unsigned long long
+gettimeofdayus(void) {
+  struct timeval tv;
+  gettimeofday(&tv, 0);
+  return (unsigned long long) tv.tv_sec * 1000000ULL + (unsigned long long) tv.tv_usec;
+}
+
 /*more than 98% inside the bell */
 #define SIGMA (1.0/3.0)
 static double compute_wirevalue(int tag, int dir)
@@ -383,66 +390,60 @@ static int process_queue_in(unsigned long long now)
   static unsigned long mtu[2] = {128U, 128U};
   struct wf_packet *pkt;
   int i, count[2] = {0}, old_count[2] = {0};
+  char flag[2] = {1, 1};
  
   if (last_in[0] == 0) {
     last_in[0] = now;
     last_in[1] = now;
   }
+
+  // TODO: ugly
+  for (i = 0; i < 2; i++) {
+      pkt = wf_queue_in[i];
+      if (!pkt)
+        backlog[i] = 0;
+      else
+        flag[i] = 0;
+  }
+
   do {
-    old_count[0] = count[0];
-    old_count[1] = count[1];
     for (i = 0; i < 2; i++) {
+      if (flag[i])
+        continue;
+
+      old_count[i] = count[i];
       unsigned long bandval;
       pkt = wf_queue_in[i];
-      if (!pkt) {
-        backlog[i] = 0; 
+      if (!pkt)
         continue;
-      }
+
       bandval = (unsigned long)compute_wirevalue(BAND,i);
       if (bandval == 0) {
         wf_queue_in[i] = pkt->next;
-        pkt_enqueue_out(pkt, now);
+        pkt_enqueue_out(pkt, now / 1000ULL);
         queue_size_in[i] -= pkt->size;
         count[i] += pkt->size;
-        last_in[i] = now; 
       } else {
         unsigned long long delta = now - last_in[i];
-        unsigned long long deadline = (1000 * mtu[i]) / bandval;
 
         /* Recalculate maximum packet length if needed. */
         if (mtu[i] < pkt->size)
           mtu[i] = pkt->size;
 
-        if (deadline > 0) {
-          /* Case 1: Less than 1000 packets per second, 
-           * calculate inter-packet delay (deadline send) 
-           */
-          if (pkt && (deadline <= delta)) {
-            wf_queue_in[i] = pkt->next;
-            pkt_enqueue_out(pkt, now);
-            queue_size_in[i] -= pkt->size;
-            last_in[i] = now; 
-            count[i] += pkt->size;
-          }
-          continue;
-        } else {
-          /* Case 2: 1000 or more packets per second, 
-           * calculate sending backlog and send as many packets
-           * as needed at this time. 
-           */
           if (delta > 0)
-            backlog[i] += (delta * bandval) / 1000U;
+            backlog[i] += (delta * bandval) / 1000000UL;
           while (pkt && (backlog[i] > pkt->size)) {
+            // if (!i)
+            //   fprintf(stderr, "Delta: %lld, Backlog: %ld, MTU: %ld, now: %lld, size: %d\n", delta, backlog[i], mtu[i], now, pkt->size);
             wf_queue_in[i] = pkt->next;
-            pkt_enqueue_out(pkt, now);
+            pkt_enqueue_out(pkt, now / 1000ULL);
             queue_size_in[i] -= pkt->size;
             count[i] += pkt->size;
-            last_in[i] = now; 
             backlog[i] -= pkt->size;
             pkt = pkt->next;
           }
-        }
       }
+      last_in[i] = now;
     }
   } while ((count[0] > old_count[0] || count[1] > old_count[1]));
   return count[0] + count[1];
@@ -928,8 +929,7 @@ void handle_packet(struct wf_packet *pkt)
       /* DROP TAIL */
       int drop_tail = max_wirevalue(markov_current, CHANBUFSIZE, pkt_in->dir);
       if (drop_tail > 0 && adv_flow == 0 && drop_tail < queue_size_in[pkt_in->dir]) { 
-//        fprintf(stderr, "Drop Tail. Queue size: %lu, limit: %u\n", queue_size_in[pkt_in->dir], drop_tail);
-	lost_segs.dropped_segments++;
+	      lost_segs.dropped_segments++;
         free(pkt_in);
         times--;
            continue;
@@ -1256,9 +1256,9 @@ static int openmgmt(char *mgmt)
   return mgmtconnfd;
 }
 
-static char header[]="\nNetemu v%s (fork from VDE wirefilter by R.Davoli 2005,2006)\nF.Apollonio, N.Tentoni 2025 - GPLv3\n";
+static char header[]="\nNetemu v%s (fork from VDE wirefilter by R.Davoli 2005,2006)\nF.Apollonio, N.Tentoni 2026 - GPLv2\n";
 static char prompt[]="\nNetemu$ ";
-static char version[]="2.0.0";
+static char version[]="2.0.1a";
 static int newmgmtconn(int fd,struct pollfd *pfd,int nfds)
 {
   int new;
@@ -2003,9 +2003,11 @@ int main(int argc,char *argv[])
     printlog(LOG_INFO,"monodirectional filter starting...");
 
   initrand();
+  unsigned long long delay, lastcall_time = 0, now, nowus;
+  int markovdelay;
   while(1) {
-    unsigned long long delay=nextms(), lastcall_time = 0, now;
-    int markovdelay=markovms();
+    delay = nextms();
+    markovdelay = markovms();
     if (markovdelay >= 0 &&
         (markovdelay < delay || delay < 0)) delay=markovdelay;
     pfd[0].events |= POLLIN;
@@ -2069,7 +2071,7 @@ int main(int argc,char *argv[])
         }
       }
       /* if there are still pending events, it means that a 
-         ctlfd has hunged up 
+         ctlfd has hung up 
       */
       if (n > 0) {
         fprintf(stderr, "Connection to the switch was closed. Exiting...\n");
@@ -2077,11 +2079,12 @@ int main(int argc,char *argv[])
       }
     }
     markov_try();
-    now = gettimeofdayms();
-    if (now > lastcall_time) {
-      lastcall_time = now;
+    nowus = gettimeofdayus();
+    now = nowus / 1000ULL;
+    if (nowus > lastcall_time) {
+      lastcall_time = nowus;
       process_queue_out(now);
-      process_queue_in(now);
+      process_queue_in(nowus);
     }
   }
 }
