@@ -118,7 +118,7 @@ struct recv_segments recv_segs;
 #define LOGIDARG 133
 #define KILO ((1<<10) << 3)
 #define MEGA ((1<<20) << 3)
-#define GIGA ((1<<30) << 3)
+#define GIGA ((1LL<<30) << 3)
 
 #define KILOBIT (1000)
 #define MEGABIT (KILOBIT * KILOBIT)
@@ -397,13 +397,14 @@ static int process_queue_in(unsigned long long now)
     last_in[1] = now;
   }
 
-  // TODO: ugly
   for (i = 0; i < 2; i++) {
       pkt = wf_queue_in[i];
-      if (!pkt)
-        backlog[i] = 0;
-      else
+      if (pkt)
         flag[i] = 0;
+      else {
+        last_in[i] = now;
+        backlog[i] = 0;
+      }
   }
 
   do {
@@ -624,7 +625,8 @@ static int read_wirevalue(char *s, int tag)
   double v=0.0;
   double vplus=0.0;
   int n;
-  int mult = VAL_BYTE, bitmode = 0;
+  long long mult = VAL_BYTE;
+  int bitmode = 0;
   char algo=ALGO_UNIFORM;
   n=strlen(s)-1;
   while ((s[n] == ' ' || s[n] == '\n' || s[n] == '\t') && n>0)
@@ -1256,9 +1258,8 @@ static int openmgmt(char *mgmt)
   return mgmtconnfd;
 }
 
-static char header[]="\nNetemu v%s (fork from VDE wirefilter by R.Davoli 2005,2006)\nF.Apollonio, N.Tentoni 2026 - GPLv2\n";
-static char prompt[]="\nNetemu$ ";
-static char version[]="2.0.1a";
+static char header[]="\nNetemu v2.0.1b (fork from VDE wirefilter by R.Davoli 2005,2006)\nF.Apollonio, N.Tentoni 2026 - GPLv2\n";
+static char prompt[]="\nVDEwf$ ";
 static int newmgmtconn(int fd,struct pollfd *pfd,int nfds)
 {
   int new;
@@ -1271,7 +1272,7 @@ static int newmgmtconn(int fd,struct pollfd *pfd,int nfds)
     return nfds;
   }
   if (nfds < NPFD) {
-    snprintf(buf,MAXCMD,header,version);
+    snprintf(buf,MAXCMD,header,"");
     write(new,buf,strlen(buf));
     write(new,prompt,strlen(prompt));
     pfd[nfds].fd=new;
